@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package ship;
+
+message BoundingBox {
+  double minLat = 1;
+  double minLon = 2;
+  double maxLat = 3;
+  double maxLon = 4;
+}
+
+message SubscribeRequest {
+  BoundingBox box = 1;
+}
+
+message Ship {
+  string id = 1;
+  string mmsi = 2;
+  double latitude = 3;
+  double longitude = 4;
+  string name = 5;
+  double heading = 6;
+  string timeUtc = 7;
+  int32 rateOfTurn = 8;
+  int32 cog = 9;
+  int32 sog = 10;
+  int32 navigationalStatus = 11;
+}
+
+message SubscribeResponse {
+  repeated Ship ships = 1;
+}
+
+service ShipService {
+  // Unary RPC: client sends a SubscribeRequest and receives a single SubscribeResponse containing latest ships
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+}
