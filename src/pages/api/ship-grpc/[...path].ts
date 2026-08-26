@@ -11,10 +11,6 @@ export const config = {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    // TEMP DEBUG: log method/url and content-type so we can confirm what the browser sends
-    try {
-      console.log('[ship-grpc proxy] incoming', { method: req.method, url: req.url, contentType: req.headers['content-type'], headers: Object.fromEntries(Object.entries(req.headers).slice(0,50)) });
-    } catch (e) { console.log('[ship-grpc proxy] log error', e); }
     const proxyBase = process.env.GRPC_WEB_PROXY_URL || 'http://localhost:8085';
     // req.query.path is the catch-all segments
     const pathSegments = req.query.path as string[] | undefined;
@@ -29,7 +25,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const targetUrl = proxyBase.replace(/\/$/, '') + path + (req.url?.includes('?') ? req.url!.substring(req.url!.indexOf('?')) : '');
-    console.log('[ship-grpc proxy] forwarding to', targetUrl);
 
     // read raw body
     const chunks: Uint8Array[] = [];
