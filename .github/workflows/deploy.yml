@@ -1,0 +1,82 @@
+# Requires these GitHub Environment variables (Settings > Environments > development/production),
+# matching the "development"/"production" GitHub Environment names configured in terraform
+# (module.github_oidc's github_environment var) for both environments:
+#   AWS_ROLE_ARN               - environments/<env> output "github_actions_role_arn"
+#   AWS_REGION                 - e.g. eu-west-1
+#   ECS_CLUSTER                - environments/<env> output "ecs_cluster_name"
+#   ECR_REPOSITORY_FRONTEND    - ECR repo name for the frontend image
+#   ECS_SERVICE_FRONTEND       - environments/<env> output "ecs_service_frontend"
+#   ECS_TASK_FAMILY_FRONTEND   - "<project>-frontend"
+#   NEXT_PUBLIC_API_URL        - environments/<env> output "api_url" (baked into the client bundle at build time)
+#   NEXT_PUBLIC_GRAPHQL_URL    - e.g. "${api_url}/graphql"
+#
+# Terraform only provisions the ECS cluster/service/initial task definition;
+# this workflow owns building the image and rolling out new task definition revisions.
+name: Deploy frontend to ECS
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY_FRONTEND }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx build --platform linux/arm64 \
+            --build-arg NEXT_PUBLIC_API_URL="${{ vars.NEXT_PUBLIC_API_URL }}" \
+            --build-arg NEXT_PUBLIC_GRAPHQL_URL="${{ vars.NEXT_PUBLIC_GRAPHQL_URL }}" \
+            -t "$REGISTRY/$REPOSITORY:$IMAGE_TAG" \
+            -t "$REGISTRY/$REPOSITORY:latest" .
+          --push .
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ vars.ECS_TASK_FAMILY_FRONTEND }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Render new frontend image into task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: frontend
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE_FRONTEND }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          wait-for-service-stability: true

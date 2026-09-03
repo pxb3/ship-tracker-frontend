@@ -1,7 +1,44 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { resolveSrv } from 'dns/promises';
 
-// Simple binary proxy for grpc-web requests. Forwards everything to GRPC_WEB_PROXY_URL
+// Simple binary proxy for grpc-web requests. Forwards everything to GRPC_WEB_PROXY_URL.
 // Default target is http://localhost:8085 (Envoy). Set GRPC_WEB_PROXY_URL to change.
+//
+// In ECS, GRPC_WEB_PROXY_URL points at a Cloud Map SRV hostname (bridge/host networkMode
+// requires SRV records, not A) - a plain fetch()/URL lookup can't resolve that, so we
+// resolve it via DNS SRV first and fall back to the configured URL as-is (e.g. localhost
+// in local dev, where there's no SRV record).
+const DEFAULT_PROXY_BASE = 'http://localhost:8085';
+const SRV_CACHE_TTL_MS = 10_000; // matches the Cloud Map service's own record TTL
+
+let cachedProxyBase: string | null = null;
+let cachedAt = 0;
+
+async function resolveProxyBase(): Promise<string> {
+  const configured = process.env.GRPC_WEB_PROXY_URL || DEFAULT_PROXY_BASE;
+
+  const now = Date.now();
+  if (cachedProxyBase && now - cachedAt < SRV_CACHE_TTL_MS) {
+    return cachedProxyBase;
+  }
+
+  let hostname: string;
+  try {
+    hostname = new URL(configured).hostname;
+  } catch {
+    return configured;
+  }
+
+  try {
+    const [record] = await resolveSrv(hostname);
+    cachedProxyBase = `http://${record.name}:${record.port}`;
+  } catch {
+    // not an SRV-backed hostname (e.g. localhost in local dev) - use the configured URL as-is
+    cachedProxyBase = configured;
+  }
+  cachedAt = now;
+  return cachedProxyBase;
+}
 
 export const config = {
   api: {
@@ -11,7 +48,7 @@ export const config = {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const proxyBase = process.env.GRPC_WEB_PROXY_URL || 'http://localhost:8085';
+    const proxyBase = await resolveProxyBase();
     // req.query.path is the catch-all segments
     const pathSegments = req.query.path as string[] | undefined;
     let path = pathSegments ? '/' + pathSegments.join('/') : '/';
